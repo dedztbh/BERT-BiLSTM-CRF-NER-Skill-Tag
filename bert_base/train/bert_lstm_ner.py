@@ -536,8 +536,8 @@ def train(args):
 
     run_config = tf.estimator.RunConfig(
         model_dir=args.output_dir,
-        save_summary_steps=500,
-        save_checkpoints_steps=500,
+        save_summary_steps=args.save_summary_steps,
+        save_checkpoints_steps=args.save_checkpoints_steps,
         session_config=session_config
     )
 

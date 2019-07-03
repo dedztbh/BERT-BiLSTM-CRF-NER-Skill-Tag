@@ -43,5 +43,5 @@ if __name__ == '__main__':
     """
     如果想训练，那么直接 指定参数跑，如果想启动服务，那么注释掉train,打开server即可
     """
-    train_ner()
-    #start_server()
+    # train_ner()
+    start_server()
