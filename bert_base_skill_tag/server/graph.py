@@ -9,7 +9,7 @@ from .helper import import_tf, set_logger
 
 import sys
 sys.path.append('..')
-from bert_base.bert import modeling
+from bert_base_skill_tag.bert import modeling
 
 __all__ = ['PoolingStrategy', 'optimize_bert_graph', 'optimize_ner_model', 'optimize_class_model']
 
@@ -283,7 +283,7 @@ def optimize_ner_model(args, num_labels,  logger=None):
                 input_mask = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_mask')
 
                 bert_config = modeling.BertConfig.from_json_file(os.path.join(args.bert_model_dir, 'bert_config.json'))
-                from bert_base.train.models import create_model
+                from bert_base_skill_tag.train.models import create_model
                 (total_loss, logits, trans, pred_ids) = create_model(
                     bert_config=bert_config, is_training=False, input_ids=input_ids, input_mask=input_mask, segment_ids=None,
                     labels=None, num_labels=num_labels, use_one_hot_embeddings=False, dropout_rate=1.0)
@@ -338,7 +338,7 @@ def optimize_class_model(args, num_labels,  logger=None):
                 input_mask = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_mask')
 
                 bert_config = modeling.BertConfig.from_json_file(os.path.join(args.bert_model_dir, 'bert_config.json'))
-                from bert_base.train.models import create_classification_model
+                from bert_base_skill_tag.train.models import create_classification_model
                 loss, per_example_loss, logits, probabilities = create_classification_model(bert_config=bert_config, is_training=False,
                     input_ids=input_ids, input_mask=input_mask, segment_ids=None, labels=None, num_labels=num_labels)
                 # pred_ids = tf.argmax(probabilities, axis=-1, output_type=tf.int32, name='pred_ids')

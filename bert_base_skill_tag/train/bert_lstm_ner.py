@@ -19,15 +19,15 @@ import tensorflow as tf
 import codecs
 import pickle
 
-from bert_base.train import tf_metrics
-from bert_base.bert import modeling
-from bert_base.bert import optimization
-from bert_base.bert import tokenization
+from bert_base_skill_tag.train import tf_metrics
+from bert_base_skill_tag.bert import modeling
+from bert_base_skill_tag.bert import optimization
+from bert_base_skill_tag.bert import tokenization
 
 # import
 
-from bert_base.train.models import create_model, InputFeatures, InputExample
-from bert_base.server.helper import set_logger
+from bert_base_skill_tag.train.models import create_model, InputFeatures, InputExample
+from bert_base_skill_tag.server.helper import set_logger
 __version__ = '0.1.0'
 
 __all__ = ['__version__', 'DataProcessor', 'NerProcessor', 'write_tokens', 'convert_single_example',
@@ -118,7 +118,7 @@ class NerProcessor(DataProcessor):
                 self.labels = pickle.load(rf)
         else:
             if len(self.labels) > 0:
-                self.labels = self.labels.union(set(["X", "[CLS]", "[SEP]"]))
+                self.labels = self.labels.union({"X", "[CLS]", "[SEP]"})
                 with codecs.open(os.path.join(self.output_dir, 'label_list.pkl'), 'wb') as rf:
                     pickle.dump(self.labels, rf)
             else:
@@ -130,10 +130,11 @@ class NerProcessor(DataProcessor):
         for (i, line) in enumerate(lines):
             guid = "%s-%s" % (set_type, i)
             text = tokenization.convert_to_unicode(line[1])
+            prop = tokenization.convert_to_unicode(line[2])
             label = tokenization.convert_to_unicode(line[0])
             # if i == 0:
             #     print('label: ', label)
-            examples.append(InputExample(guid=guid, text=text, label=label))
+            examples.append(InputExample(guid=guid, text=text, prop=prop, label=label))
         return examples
 
     def _read_data(self, input_file):
@@ -141,24 +142,29 @@ class NerProcessor(DataProcessor):
         with codecs.open(input_file, 'r', encoding='utf-8') as f:
             lines = []
             words = []
+            props = []
             labels = []
             for line in f:
                 contends = line.strip()
                 tokens = contends.split(' ')
-                if len(tokens) == 2:
+                if len(tokens) == 3:
                     words.append(tokens[0])
+                    props.append(tokens[1])
                     labels.append(tokens[-1])
                 else:
                     if len(contends) == 0 and len(words) > 0:
                         label = []
+                        prop = []
                         word = []
-                        for l, w in zip(labels, words):
-                            if len(l) > 0 and len(w) > 0:
+                        for l, w, p in zip(labels, words, props):
+                            if len(l) > 0 and len(w) > 0 and len(p) > 0:
                                 label.append(l)
                                 self.labels.add(l)
                                 word.append(w)
-                        lines.append([' '.join(label), ' '.join(word)])
+                                prop.append(p)
+                        lines.append([' '.join(label), ' '.join(word), ' '.join(prop)])
                         words = []
+                        props = []
                         labels = []
                         continue
                 if contends.startswith("-DOCSTART-"):
@@ -183,7 +189,7 @@ def write_tokens(tokens, output_dir, mode):
         wf.close()
 
 
-def convert_single_example(ex_index, example, label_list, max_seq_length, tokenizer, output_dir, mode):
+def convert_single_example(ex_index, example, label_list, max_seq_length, tokenizer, output_dir, mode, prop_list):
     """
     将一个样本进行分析，然后将字转化为id, 标签转化为id,然后结构化到InputFeatures对象中
     :param ex_index: index
@@ -204,46 +210,67 @@ def convert_single_example(ex_index, example, label_list, max_seq_length, tokeni
         with codecs.open(os.path.join(output_dir, 'label2id.pkl'), 'wb') as w:
             pickle.dump(label_map, w)
 
+    prop_map = {}
+    for (i, prop) in enumerate(prop_list, 1):
+        prop_map[prop] = i
+    # 保存prop->index 的map
+    if not os.path.exists(os.path.join(output_dir, 'prop2id.pkl')):
+        with codecs.open(os.path.join(output_dir, 'prop2id.pkl'), 'wb') as w:
+            pickle.dump(prop_map, w)
+
     textlist = example.text.split(' ')
+    proplist = example.prop.split(' ')
     labellist = example.label.split(' ')
     tokens = []
+    props = []
     labels = []
     for i, word in enumerate(textlist):
         # 分词，如果是中文，就是分字,但是对于一些不在BERT的vocab.txt中得字符会被进行WordPice处理（例如中文的引号），可以将所有的分字操作替换为list(input)
         token = tokenizer.tokenize(word)
         tokens.extend(token)
         label_1 = labellist[i]
+        prop_1 = proplist[i]
         for m in range(len(token)):
             if m == 0:
                 labels.append(label_1)
+                props.append(prop_1)
             else:  # 一般不会出现else
                 labels.append("X")
+                props.append("X")
     # tokens = tokenizer.tokenize(example.text)
     # 序列截断
     if len(tokens) >= max_seq_length - 1:
         tokens = tokens[0:(max_seq_length - 2)]  # -2 的原因是因为序列需要加一个句首和句尾标志
+        props = props[0:(max_seq_length - 2)]
         labels = labels[0:(max_seq_length - 2)]
     ntokens = []
+    prop_ids = []
     segment_ids = []
     label_ids = []
     ntokens.append("[CLS]")  # 句子开始设置CLS 标志
     segment_ids.append(0)
     # append("O") or append("[CLS]") not sure!
     label_ids.append(label_map["[CLS]"])  # O OR CLS 没有任何影响，不过我觉得O 会减少标签个数,不过拒收和句尾使用不同的标志来标注，使用LCS 也没毛病
+    prop_ids.append(prop_map["[CLS]"])
+
     for i, token in enumerate(tokens):
         ntokens.append(token)
         segment_ids.append(0)
         label_ids.append(label_map[labels[i]])
+        prop_ids.append(prop_map[props[i]])
     ntokens.append("[SEP]")  # 句尾添加[SEP] 标志
     segment_ids.append(0)
     # append("O") or append("[SEP]") not sure!
     label_ids.append(label_map["[SEP]"])
+    prop_ids.append(prop_map["[SEP]"])
     input_ids = tokenizer.convert_tokens_to_ids(ntokens)  # 将序列中的字(ntokens)转化为ID形式
+
     input_mask = [1] * len(input_ids)
     # label_mask = [1] * len(input_ids)
     # padding, 使用
     while len(input_ids) < max_seq_length:
         input_ids.append(0)
+        prop_ids.append(0)
         input_mask.append(0)
         segment_ids.append(0)
         # we don't concerned about it!
@@ -252,6 +279,7 @@ def convert_single_example(ex_index, example, label_list, max_seq_length, tokeni
         # label_mask.append(0)
     # print(len(input_ids))
     assert len(input_ids) == max_seq_length
+    assert len(prop_ids) == max_seq_length
     assert len(input_mask) == max_seq_length
     assert len(segment_ids) == max_seq_length
     assert len(label_ids) == max_seq_length
@@ -264,6 +292,7 @@ def convert_single_example(ex_index, example, label_list, max_seq_length, tokeni
         logger.info("tokens: %s" % " ".join(
             [tokenization.printable_text(x) for x in tokens]))
         logger.info("input_ids: %s" % " ".join([str(x) for x in input_ids]))
+        logger.info("prop_ids: %s" % " ".join([str(x) for x in prop_ids]))
         logger.info("input_mask: %s" % " ".join([str(x) for x in input_mask]))
         logger.info("segment_ids: %s" % " ".join([str(x) for x in segment_ids]))
         logger.info("label_ids: %s" % " ".join([str(x) for x in label_ids]))
@@ -272,6 +301,7 @@ def convert_single_example(ex_index, example, label_list, max_seq_length, tokeni
     # 结构化为一个类
     feature = InputFeatures(
         input_ids=input_ids,
+        prop_ids=prop_ids,
         input_mask=input_mask,
         segment_ids=segment_ids,
         label_ids=label_ids,
@@ -283,7 +313,7 @@ def convert_single_example(ex_index, example, label_list, max_seq_length, tokeni
 
 
 def filed_based_convert_examples_to_features(
-        examples, label_list, max_seq_length, tokenizer, output_file, output_dir, mode=None):
+        examples, label_list, max_seq_length, tokenizer, output_file, output_dir, mode=None, prop_list=None):
     """
     将数据转化为TF_Record 结构，作为模型数据输入
     :param examples:  样本
@@ -300,7 +330,8 @@ def filed_based_convert_examples_to_features(
         if ex_index % 5000 == 0:
             logger.info("Writing example %d of %d" % (ex_index, len(examples)))
         # 对于每一个训练样本,
-        feature = convert_single_example(ex_index, example, label_list, max_seq_length, tokenizer, output_dir, mode)
+        feature = convert_single_example(ex_index, example, label_list, max_seq_length, tokenizer, output_dir, mode,
+                                         prop_list=prop_list)
 
         def create_int_feature(values):
             f = tf.train.Feature(int64_list=tf.train.Int64List(value=list(values)))
@@ -308,6 +339,7 @@ def filed_based_convert_examples_to_features(
 
         features = collections.OrderedDict()
         features["input_ids"] = create_int_feature(feature.input_ids)
+        features["prop_ids"] = create_int_feature(feature.prop_ids)
         features["input_mask"] = create_int_feature(feature.input_mask)
         features["segment_ids"] = create_int_feature(feature.segment_ids)
         features["label_ids"] = create_int_feature(feature.label_ids)
@@ -320,6 +352,7 @@ def filed_based_convert_examples_to_features(
 def file_based_input_fn_builder(input_file, seq_length, is_training, drop_remainder):
     name_to_features = {
         "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
+        "prop_ids": tf.FixedLenFeature([seq_length], tf.int64),
         "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
         "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
         "label_ids": tf.FixedLenFeature([seq_length], tf.int64),
@@ -352,7 +385,7 @@ def file_based_input_fn_builder(input_file, seq_length, is_training, drop_remain
     return input_fn
 
 
-def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
+def model_fn_builder(bert_config, num_labels, num_props, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, args):
     """
     构建模型
@@ -372,18 +405,20 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
         for name in sorted(features.keys()):
             logger.info("  name = %s, shape = %s" % (name, features[name].shape))
         input_ids = features["input_ids"]
+        prop_ids = features["prop_ids"]
         input_mask = features["input_mask"]
         segment_ids = features["segment_ids"]
         label_ids = features["label_ids"]
 
         print('shape of input_ids', input_ids.shape)
+        print('shape of prop_ids', prop_ids.shape)
         # label_mask = features["label_mask"]
         is_training = (mode == tf.estimator.ModeKeys.TRAIN)
 
         # 使用参数构建模型,input_idx 就是输入的样本idx表示，label_ids 就是标签的idx表示
         total_loss, logits, trans, pred_ids = create_model(
             bert_config, is_training, input_ids, input_mask, segment_ids, label_ids,
-            num_labels, False, args.dropout_rate, args.lstm_size, args.cell, args.num_layers)
+            num_labels, False, args.dropout_rate, args.lstm_size, args.cell, args.num_layers, prop_ids, num_props)
 
         tvars = tf.trainable_variables()
         # 加载BERT模型
@@ -568,11 +603,16 @@ def train(args):
         logger.info("  Batch size = %d", args.batch_size)
 
     label_list = processor.get_labels()
+
+    with open(os.path.join(args.prop2label_dir, 'prop2label.pkl'), mode='rb') as f:
+        prop_list = set(pickle.load(f).keys()).union({"X", "[CLS]", "[SEP]"})
+
     # 返回的model_dn 是一个函数，其定义了模型，训练，评测方法，并且使用钩子参数，加载了BERT模型的参数进行了自己模型的参数初始化过程
     # tf 新的架构方法，通过定义model_fn 函数，定义模型，然后通过EstimatorAPI进行模型的其他工作，Es就可以控制模型的训练，预测，评估工作等。
     model_fn = model_fn_builder(
         bert_config=bert_config,
         num_labels=len(label_list) + 1,
+        num_props=len(prop_list) + 1,
         init_checkpoint=args.init_checkpoint,
         learning_rate=args.learning_rate,
         num_train_steps=num_train_steps,
@@ -593,7 +633,7 @@ def train(args):
         train_file = os.path.join(args.output_dir, "train.tf_record")
         if not os.path.exists(train_file):
             filed_based_convert_examples_to_features(
-                train_examples, label_list, args.max_seq_length, tokenizer, train_file, args.output_dir)
+                train_examples, label_list, args.max_seq_length, tokenizer, train_file, args.output_dir, prop_list=prop_list)
 
         # 2.读取record 数据，组成batch
         train_input_fn = file_based_input_fn_builder(
@@ -606,7 +646,7 @@ def train(args):
         eval_file = os.path.join(args.output_dir, "eval.tf_record")
         if not os.path.exists(eval_file):
             filed_based_convert_examples_to_features(
-                eval_examples, label_list, args.max_seq_length, tokenizer, eval_file, args.output_dir)
+                eval_examples, label_list, args.max_seq_length, tokenizer, eval_file, args.output_dir, prop_list=prop_list)
 
         eval_input_fn = file_based_input_fn_builder(
             input_file=eval_file,
@@ -643,7 +683,7 @@ def train(args):
         predict_file = os.path.join(args.output_dir, "predict.tf_record")
         filed_based_convert_examples_to_features(predict_examples, label_list,
                                                  args.max_seq_length, tokenizer,
-                                                 predict_file, args.output_dir, mode="test")
+                                                 predict_file, args.output_dir, mode="test", prop_list=prop_list)
 
         logger.info("***** Running prediction*****")
         logger.info("  Num examples = %d", len(predict_examples))
@@ -691,7 +731,7 @@ def train(args):
 
         with codecs.open(output_predict_file, 'w', encoding='utf-8') as writer:
             result_to_pair(writer)
-        from bert_base.train import conlleval
+        from bert_base_skill_tag.train import conlleval
         eval_result = conlleval.return_report(output_predict_file)
         print(''.join(eval_result))
         # 写结果到文件中

@@ -12,14 +12,14 @@ from setuptools import setup, find_packages
 # __version__ = version_line.split('=')[1].replace(' ', '')
 # print(__version__)
 setup(
-    name='bert_base',
+    name='bert_base_skill_tag',
     version='0.0.9',
     description='(modified by DEDZTBH) Use Google\'s BERT for Chinese natural language processing tasks such as named entity recognition and provide server services',
-    url='https://github.com/macanv/BERT-BiLSTM-CRF-NER',
+    url='https://github.com/DEDZTBH/BERT-BiLSTM-CRF-NER-Skill-Tag',
     long_description=open('README.md', 'r', encoding='utf-8').read(),
     long_description_content_type='text/markdown',
-    author='Ma Can',
-    author_email='ma_cancan@163.com',
+    author='DEDZTBH',
+    author_email='peiqial@outlook.com',
     license='MIT',
     packages=find_packages(),
     zip_safe=False,
@@ -42,8 +42,8 @@ setup(
         #'Topic :: Scientific/Engineering :: Artificial Intelligence :: Natural Language Processing :: Named Entity Recognition',
     ),
     entry_points={
-        'console_scripts': ['bert-base-serving-start=bert_base.runs:start_server',
-                            'bert-base-ner-train=bert_base.runs:train_ner'],
+        'console_scripts': ['bert-base-serving-start=bert_base_skill_tag.runs:start_server',
+                            'bert-base-ner-train=bert_base_skill_tag.runs:train_ner'],
     },
     keywords='bert nlp ner NER named entity recognition bilstm crf tensorflow machine learning sentence encoding embedding serving',
 )

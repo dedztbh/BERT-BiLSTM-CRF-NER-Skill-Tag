@@ -7,8 +7,9 @@
  @File    : models.py
 """
 
-from bert_base.train.lstm_crf_layer import BLSTM_CRF
+from bert_base_skill_tag.train.lstm_crf_layer import BLSTM_CRF
 from tensorflow.contrib.layers.python.layers import initializers
+import numpy as np
 
 
 __all__ = ['InputExample', 'InputFeatures', 'decode_labels', 'create_model', 'convert_id_str',
@@ -22,7 +23,7 @@ class Model(object):
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
 
-    def __init__(self, guid=None, text=None, label=None):
+    def __init__(self, guid=None, text=None, prop=None, label=None):
         """Constructs a InputExample.
         Args:
           guid: Unique id for the example.
@@ -33,16 +34,18 @@ class InputExample(object):
         """
         self.guid = guid
         self.text = text
+        self.prop = prop
         self.label = label
 
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids, input_mask, segment_ids, label_ids, ):
+    def __init__(self, input_ids, input_mask, segment_ids, label_ids, prop_ids):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_ids = label_ids
+        self.prop_ids = prop_ids
         # self.label_mask = label_mask
 
 
@@ -64,7 +67,7 @@ class DataProcessor(object):
 
 def create_model(bert_config, is_training, input_ids, input_mask,
                  segment_ids, labels, num_labels, use_one_hot_embeddings,
-                 dropout_rate=1.0, lstm_size=1, cell='lstm', num_layers=1):
+                 dropout_rate=1.0, lstm_size=1, cell='lstm', num_layers=1, prop_ids=None, num_props=None):
     """
     创建X模型
     :param bert_config: bert 配置
@@ -79,7 +82,7 @@ def create_model(bert_config, is_training, input_ids, input_mask,
     """
     # 使用数据加载BertModel,获取对应的字embedding
     import tensorflow as tf
-    from bert_base.bert import modeling
+    from bert_base_skill_tag.bert import modeling
     model = modeling.BertModel(
         config=bert_config,
         is_training=is_training,
@@ -90,6 +93,19 @@ def create_model(bert_config, is_training, input_ids, input_mask,
     )
     # 获取对应的embedding 输入数据[batch_size, seq_length, embedding_size]
     embedding = model.get_sequence_output()
+
+    with tf.variable_scope("props"):
+        _prop_embeddings = tf.Variable(np.float32(np.random.uniform(-0.25, 0.25, (num_props, 768))),
+                                       dtype=tf.float32,
+                                       trainable=True,
+                                       name="_prop_embeddings")
+        prop_embeddings = tf.nn.embedding_lookup(params=_prop_embeddings,
+                                                 ids=prop_ids,
+                                                 name="prop_embeddings")
+
+    # 加入词性
+    embedding = tf.concat([embedding, prop_embeddings], -1)
+
     max_seq_length = embedding.shape[1].value
     # 算序列真实长度
     used = tf.sign(tf.abs(input_ids))
@@ -116,7 +132,7 @@ def create_classification_model(bert_config, is_training, input_ids, input_mask,
     :return:
     """
     import tensorflow as tf
-    from bert_base.bert import modeling
+    from bert_base_skill_tag.bert import modeling
     # 通过传入的训练数据，进行representation
     model = modeling.BertModel(
         config=bert_config,

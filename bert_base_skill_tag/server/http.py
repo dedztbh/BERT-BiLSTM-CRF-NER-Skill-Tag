@@ -16,7 +16,7 @@ class BertHTTPProxy(Process):
             from flask_compress import Compress
             from flask_cors import CORS
             from flask_json import FlaskJSON, as_json, JsonError
-            from bert_base.client import ConcurrentBertClient
+            from bert_base_skill_tag.client import ConcurrentBertClient
         except ImportError:
             raise ImportError('BertClient or Flask or its dependencies are not fully installed, '
                               'they are required for serving HTTP requests.'

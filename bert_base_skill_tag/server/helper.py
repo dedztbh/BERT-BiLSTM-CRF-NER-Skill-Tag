@@ -32,18 +32,18 @@ class NTLogger:
         self.context = context
         self.verbose = verbose
 
-    def info(self, msg, **kwargs):
-        print('I:%s:%s' % (self.context, msg), flush=True)
+    def info(self, msg, *args):
+        print('I:%s:%s' % (self.context, msg % args), flush=True)
 
-    def debug(self, msg, **kwargs):
+    def debug(self, msg, *args):
         if self.verbose:
-            print('D:%s:%s' % (self.context, msg), flush=True)
+            print('D:%s:%s' % (self.context, msg % args), flush=True)
 
-    def error(self, msg, **kwargs):
-        print('E:%s:%s' % (self.context, msg), flush=True)
+    def error(self, msg, *args):
+        print('E:%s:%s' % (self.context, msg % args), flush=True)
 
-    def warning(self, msg, **kwargs):
-        print('W:%s:%s' % (self.context, msg), flush=True)
+    def warning(self, msg, *args):
+        print('W:%s:%s' % (self.context, msg % args), flush=True)
 
 
 def send_ndarray(src, dest, X, req_id=b'', flags=0, copy=True, track=False):
