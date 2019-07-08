@@ -27,6 +27,8 @@ from bert_base_skill_tag.bert import modeling
 from bert_base_skill_tag.bert import tokenization
 import tensorflow as tf
 
+from bert_base_skill_tag.server.extract_util import preprocess_input_w_prop_embeddings
+
 flags = tf.flags
 
 FLAGS = flags.FLAGS
@@ -80,19 +82,25 @@ flags.DEFINE_bool(
 
 class InputExample(object):
 
-    def __init__(self, unique_id, text_a, text_b):
+    def __init__(self, unique_id, text_a, text_b, props_a, props_b):
         self.unique_id = unique_id
         self.text_a = text_a
         self.text_b = text_b
+        self.props_a = props_a
+        self.props_b = props_b
+        assert len(text_a) == len(props_a)
+        if text_b:
+            assert len(text_b) == len(props_b)
 
 
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, unique_id, tokens, input_ids, input_mask, input_type_ids):
+    def __init__(self, unique_id, tokens, input_ids, prop_ids, input_mask, input_type_ids):
         self.unique_id = unique_id
         self.tokens = tokens
         self.input_ids = input_ids
+        self.prop_ids = prop_ids
         self.input_mask = input_mask
         self.input_type_ids = input_type_ids
 
@@ -102,12 +110,14 @@ def input_fn_builder(features, seq_length):
 
     all_unique_ids = []
     all_input_ids = []
+    all_prop_ids = []
     all_input_mask = []
     all_input_type_ids = []
 
     for feature in features:
         all_unique_ids.append(feature.unique_id)
         all_input_ids.append(feature.input_ids)
+        all_prop_ids.append(feature.prop_ids)
         all_input_mask.append(feature.input_mask)
         all_input_type_ids.append(feature.input_type_ids)
 
@@ -126,6 +136,10 @@ def input_fn_builder(features, seq_length):
             "input_ids":
                 tf.constant(
                     all_input_ids, shape=[num_examples, seq_length],
+                    dtype=tf.int32),
+            "prop_ids":
+                tf.constant(
+                    all_prop_ids, shape=[num_examples, seq_length],
                     dtype=tf.int32),
             "input_mask":
                 tf.constant(
@@ -299,7 +313,7 @@ def convert_examples_to_features(examples, seq_length, tokenizer):
     return features
 
 
-def _truncate_seq_pair(tokens_a, tokens_b, max_length):
+def _truncate_seq_pair(tokens_a, tokens_b, props_a, props_b, max_length):
     """Truncates a sequence pair in place to the maximum length."""
 
     # This is a simple heuristic which will always truncate the longer sequence
@@ -312,8 +326,10 @@ def _truncate_seq_pair(tokens_a, tokens_b, max_length):
             break
         if len(tokens_a) > len(tokens_b):
             tokens_a.pop()
+            props_a.pop()
         else:
             tokens_b.pop()
+            props_b.pop()
 
 
 def read_examples(input_file):
@@ -410,9 +426,15 @@ def main(_):
             writer.write(json.dumps(output_json) + "\n")
 
 
-def convert_lst_to_features(lst_str, seq_length, tokenizer, logger, is_tokenized=False, mask_cls_sep=False):
+def convert_lst_to_features(lst_str, seq_length, tokenizer, prop2id, logger, is_tokenized=False, mask_cls_sep=False):
     """Loads a data file into a list of `InputBatch`s."""
 
+    if is_tokenized:
+        lst_str = [''.join(strs) for strs in lst_str]
+
+    lst_str = preprocess_input_w_prop_embeddings(lst_str, return_tuple_array=False)
+    lst_str = [[''.join(strs), p] for [strs, p] in lst_str]
+    print(lst_str)
     examples = read_tokenized_examples(lst_str) if is_tokenized else read_line_examples(lst_str)
 
     _tokenize = lambda x: x if is_tokenized else tokenizer.tokenize(x)
@@ -428,11 +450,12 @@ def convert_lst_to_features(lst_str, seq_length, tokenizer, logger, is_tokenized
             # Modifies `tokens_a` and `tokens_b` in place so that the total
             # length is less than the specified length.
             # Account for [CLS], [SEP], [SEP] with "- 3"
-            _truncate_seq_pair(tokens_a, tokens_b, seq_length - 3)
+            _truncate_seq_pair(tokens_a, tokens_b, example.props_a, example.props_b, seq_length - 3)
         else:
             # Account for [CLS] and [SEP] with "- 2"
             if len(tokens_a) > seq_length - 2:
                 tokens_a = tokens_a[0:(seq_length - 2)]
+                example.props_a = example.props_a[0:(seq_length - 2)]
 
         # The convention in BERT is:
         # (a) For sequence pairs:
@@ -453,23 +476,28 @@ def convert_lst_to_features(lst_str, seq_length, tokenizer, logger, is_tokenized
         # used as as the "sentence vector". Note that this only makes sense because
         # the entire model is fine-tuned.
         tokens = ['[CLS]'] + tokens_a + ['[SEP]']
+        props = ['[CLS]'] + example.props_a + ['[SEP]']
         input_type_ids = [0] * len(tokens)
         input_mask = [int(not mask_cls_sep)] + [1] * len(tokens_a) + [int(not mask_cls_sep)]
 
         if tokens_b:
             tokens += tokens_b + ['[SEP]']
+            props += example.props_b + ['[SEP]']
             input_type_ids += [1] * (len(tokens_b) + 1)
             input_mask += [1] * len(tokens_b) + [int(not mask_cls_sep)]
 
         input_ids = tokenizer.convert_tokens_to_ids(tokens)
+        prop_ids = [prop2id[prop] for prop in props]
 
         # Zero-pad up to the sequence length. more pythonic
         pad_len = seq_length - len(input_ids)
         input_ids += [0] * pad_len
+        prop_ids += [0] * pad_len
         input_mask += [0] * pad_len
         input_type_ids += [0] * pad_len
 
         assert len(input_ids) == seq_length
+        assert len(prop_ids) == seq_length
         assert len(input_mask) == seq_length
         assert len(input_type_ids) == seq_length
 
@@ -482,6 +510,7 @@ def convert_lst_to_features(lst_str, seq_length, tokenizer, logger, is_tokenized
             unique_id=example.unique_id,
             tokens=tokens,
             input_ids=input_ids,
+            prop_ids=prop_ids,
             input_mask=input_mask,
             input_type_ids=input_type_ids)
 
@@ -494,38 +523,47 @@ def read_tokenized_examples(lst_strs):
     """
     unique_id = 0
     # 对lst_list中的数据进行转化为ID
-    lst_strs = [[tokenization.convert_to_unicode(w) for w in s] for s in lst_strs]
-    for ss in lst_strs:
+    lst_strs = [[[tokenization.convert_to_unicode(w) for w in s], p] for [s, p] in lst_strs]
+    for [ss, props] in lst_strs:
         text_a = ss
         text_b = None
+        props_a = props
+        props_b = None
         try:
             # 这里使用|||对输入的句子进行切分如果存在这个符号，表示输入的是两个句子，即text_a 和text_b, 否则index出错，只会存在test_a
             j = ss.index('|||')
             text_a = ss[:j]
             text_b = ss[(j + 1):]
+            props_a = props[:j]
+            props_b = props[(j + 1):]
         except ValueError:
             pass
-        yield InputExample(unique_id=unique_id, text_a=text_a, text_b=text_b)
+        yield InputExample(unique_id=unique_id, text_a=text_a, text_b=text_b, props_a=props_a, props_b=props_b)
         unique_id += 1
 
 
 def read_line_examples(lst_strs):
     """Read a list of `InputExample`s from a list of strings."""
     unique_id = 0
-    for ss in lst_strs:
+    for [ss, props] in lst_strs:
         line = tokenization.convert_to_unicode(ss)
         if not line:
             continue
-        line = line.strip()
+        # line = line.strip()
         text_a = None
         text_b = None
+        props_a = None
+        props_b = None
         m = re.match(r"^(.*) \|\|\| (.*)$", line)
         if m is None:
             text_a = line
+            props_a = props
         else:
             text_a = m.group(1)
             text_b = m.group(2)
-        yield InputExample(unique_id=unique_id, text_a=text_a, text_b=text_b)
+            props_a = props[:len(text_a)]
+            props_b = props[-len(text_b):]
+        yield InputExample(unique_id=unique_id, text_a=text_a, text_b=text_b, props_a=props_a, props_b=props_b)
         unique_id += 1
 
 

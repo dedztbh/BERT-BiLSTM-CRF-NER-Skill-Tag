@@ -11,7 +11,7 @@ import sys
 sys.path.append('..')
 from bert_base_skill_tag.bert import modeling
 
-__all__ = ['PoolingStrategy', 'optimize_bert_graph', 'optimize_ner_model', 'optimize_class_model']
+__all__ = ['PoolingStrategy', 'optimize_ner_model']
 
 
 class PoolingStrategy(Enum):
@@ -35,124 +35,124 @@ class PoolingStrategy(Enum):
             raise ValueError()
 
 
-def optimize_bert_graph(args, logger=None):
-    if not logger:
-        logger = set_logger(colored('GRAPHOPT', 'cyan'), args.verbose)
-    try:
-        if not os.path.exists(args.model_pb_dir):
-            os.mkdir(args.model_pb_dir)
-        pb_file = os.path.join(args.model_pb_dir, 'bert_model.pb')
-        if os.path.exists(pb_file):
-            return pb_file
-        # we don't need GPU for optimizing the graph
-        tf = import_tf(verbose=args.verbose)
-        from tensorflow.python.tools.optimize_for_inference_lib import optimize_for_inference
-
-        config = tf.ConfigProto(device_count={'GPU': 0}, allow_soft_placement=True)
-
-        config_fp = os.path.join(args.model_dir, args.config_name)
-        init_checkpoint = os.path.join(args.tuned_model_dir or args.bert_model_dir, args.ckpt_name)
-        if args.fp16:
-            logger.warning('fp16 is turned on! '
-                           'Note that not all CPU GPU support fast fp16 instructions, '
-                           'worst case you will have degraded performance!')
-        logger.info('model config: %s' % config_fp)
-        logger.info(
-            'checkpoint%s: %s' % (
-            ' (override by the fine-tuned model)' if args.tuned_model_dir else '', init_checkpoint))
-        with tf.gfile.GFile(config_fp, 'r') as f:
-            bert_config = modeling.BertConfig.from_dict(json.load(f))
-
-        logger.info('build graph...')
-        # input placeholders, not sure if they are friendly to XLA
-        input_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_ids')
-        input_mask = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_mask')
-        input_type_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_type_ids')
-
-        jit_scope = tf.contrib.compiler.jit.experimental_jit_scope if args.xla else contextlib.suppress
-
-        with jit_scope():
-            input_tensors = [input_ids, input_mask, input_type_ids]
-
-            model = modeling.BertModel(
-                config=bert_config,
-                is_training=False,
-                input_ids=input_ids,
-                input_mask=input_mask,
-                token_type_ids=input_type_ids,
-                use_one_hot_embeddings=False)
-
-            tvars = tf.trainable_variables()
-
-            (assignment_map, initialized_variable_names
-             ) = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
-
-            tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
-
-            minus_mask = lambda x, m: x - tf.expand_dims(1.0 - m, axis=-1) * 1e30
-            mul_mask = lambda x, m: x * tf.expand_dims(m, axis=-1)
-            masked_reduce_max = lambda x, m: tf.reduce_max(minus_mask(x, m), axis=1)
-            masked_reduce_mean = lambda x, m: tf.reduce_sum(mul_mask(x, m), axis=1) / (
-                    tf.reduce_sum(m, axis=1, keepdims=True) + 1e-10)
-
-            with tf.variable_scope("pooling"):
-                if len(args.pooling_layer) == 1:
-                    encoder_layer = model.all_encoder_layers[args.pooling_layer[0]]
-                else:
-                    all_layers = [model.all_encoder_layers[l] for l in args.pooling_layer]
-                    encoder_layer = tf.concat(all_layers, -1)
-
-                input_mask = tf.cast(input_mask, tf.float32)
-                if args.pooling_strategy == PoolingStrategy.REDUCE_MEAN:
-                    pooled = masked_reduce_mean(encoder_layer, input_mask)
-                elif args.pooling_strategy == PoolingStrategy.REDUCE_MAX:
-                    pooled = masked_reduce_max(encoder_layer, input_mask)
-                elif args.pooling_strategy == PoolingStrategy.REDUCE_MEAN_MAX:
-                    pooled = tf.concat([masked_reduce_mean(encoder_layer, input_mask),
-                                        masked_reduce_max(encoder_layer, input_mask)], axis=1)
-                elif args.pooling_strategy == PoolingStrategy.FIRST_TOKEN or \
-                        args.pooling_strategy == PoolingStrategy.CLS_TOKEN:
-                    pooled = tf.squeeze(encoder_layer[:, 0:1, :], axis=1)
-                elif args.pooling_strategy == PoolingStrategy.LAST_TOKEN or \
-                        args.pooling_strategy == PoolingStrategy.SEP_TOKEN:
-                    seq_len = tf.cast(tf.reduce_sum(input_mask, axis=1), tf.int32)
-                    rng = tf.range(0, tf.shape(seq_len)[0])
-                    indexes = tf.stack([rng, seq_len - 1], 1)
-                    pooled = tf.gather_nd(encoder_layer, indexes)
-                elif args.pooling_strategy == PoolingStrategy.NONE:
-                    pooled = mul_mask(encoder_layer, input_mask)
-                else:
-                    raise NotImplementedError()
-
-            if args.fp16:
-                pooled = tf.cast(pooled, tf.float16)
-
-            pooled = tf.identity(pooled, 'final_encodes')
-            output_tensors = [pooled]
-            tmp_g = tf.get_default_graph().as_graph_def()
-
-        with tf.Session(config=config) as sess:
-            logger.info('load parameters from checkpoint...')
-
-            sess.run(tf.global_variables_initializer())
-            dtypes = [n.dtype for n in input_tensors]
-            logger.info('optimize...')
-            tmp_g = optimize_for_inference(
-                tmp_g,
-                [n.name[:-2] for n in input_tensors],
-                [n.name[:-2] for n in output_tensors],
-                [dtype.as_datatype_enum for dtype in dtypes],
-                False)
-
-            logger.info('freeze...')
-            tmp_g = convert_variables_to_constants(sess, tmp_g, [n.name[:-2] for n in output_tensors],
-                                                   use_fp16=args.fp16)
-
-        logger.info('write graph to a tmp file: %s' % args.model_pb_dir)
-        with tf.gfile.GFile(pb_file, 'wb') as f:
-            f.write(tmp_g.SerializeToString())
-    except Exception:
-        logger.error('fail to optimize the graph!', exc_info=True)
+# def optimize_bert_graph(args, logger=None):
+#     if not logger:
+#         logger = set_logger(colored('GRAPHOPT', 'cyan'), args.verbose)
+#     try:
+#         if not os.path.exists(args.model_pb_dir):
+#             os.mkdir(args.model_pb_dir)
+#         pb_file = os.path.join(args.model_pb_dir, 'bert_model.pb')
+#         if os.path.exists(pb_file):
+#             return pb_file
+#         # we don't need GPU for optimizing the graph
+#         tf = import_tf(verbose=args.verbose)
+#         from tensorflow.python.tools.optimize_for_inference_lib import optimize_for_inference
+#
+#         config = tf.ConfigProto(device_count={'GPU': 0}, allow_soft_placement=True)
+#
+#         config_fp = os.path.join(args.model_dir, args.config_name)
+#         init_checkpoint = os.path.join(args.tuned_model_dir or args.bert_model_dir, args.ckpt_name)
+#         if args.fp16:
+#             logger.warning('fp16 is turned on! '
+#                            'Note that not all CPU GPU support fast fp16 instructions, '
+#                            'worst case you will have degraded performance!')
+#         logger.info('model config: %s' % config_fp)
+#         logger.info(
+#             'checkpoint%s: %s' % (
+#             ' (override by the fine-tuned model)' if args.tuned_model_dir else '', init_checkpoint))
+#         with tf.gfile.GFile(config_fp, 'r') as f:
+#             bert_config = modeling.BertConfig.from_dict(json.load(f))
+#
+#         logger.info('build graph...')
+#         # input placeholders, not sure if they are friendly to XLA
+#         input_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_ids')
+#         input_mask = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_mask')
+#         input_type_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_type_ids')
+#
+#         jit_scope = tf.contrib.compiler.jit.experimental_jit_scope if args.xla else contextlib.suppress
+#
+#         with jit_scope():
+#             input_tensors = [input_ids, input_mask, input_type_ids]
+#
+#             model = modeling.BertModel(
+#                 config=bert_config,
+#                 is_training=False,
+#                 input_ids=input_ids,
+#                 input_mask=input_mask,
+#                 token_type_ids=input_type_ids,
+#                 use_one_hot_embeddings=False)
+#
+#             tvars = tf.trainable_variables()
+#
+#             (assignment_map, initialized_variable_names
+#              ) = modeling.get_assignment_map_from_checkpoint(tvars, init_checkpoint)
+#
+#             tf.train.init_from_checkpoint(init_checkpoint, assignment_map)
+#
+#             minus_mask = lambda x, m: x - tf.expand_dims(1.0 - m, axis=-1) * 1e30
+#             mul_mask = lambda x, m: x * tf.expand_dims(m, axis=-1)
+#             masked_reduce_max = lambda x, m: tf.reduce_max(minus_mask(x, m), axis=1)
+#             masked_reduce_mean = lambda x, m: tf.reduce_sum(mul_mask(x, m), axis=1) / (
+#                     tf.reduce_sum(m, axis=1, keepdims=True) + 1e-10)
+#
+#             with tf.variable_scope("pooling"):
+#                 if len(args.pooling_layer) == 1:
+#                     encoder_layer = model.all_encoder_layers[args.pooling_layer[0]]
+#                 else:
+#                     all_layers = [model.all_encoder_layers[l] for l in args.pooling_layer]
+#                     encoder_layer = tf.concat(all_layers, -1)
+#
+#                 input_mask = tf.cast(input_mask, tf.float32)
+#                 if args.pooling_strategy == PoolingStrategy.REDUCE_MEAN:
+#                     pooled = masked_reduce_mean(encoder_layer, input_mask)
+#                 elif args.pooling_strategy == PoolingStrategy.REDUCE_MAX:
+#                     pooled = masked_reduce_max(encoder_layer, input_mask)
+#                 elif args.pooling_strategy == PoolingStrategy.REDUCE_MEAN_MAX:
+#                     pooled = tf.concat([masked_reduce_mean(encoder_layer, input_mask),
+#                                         masked_reduce_max(encoder_layer, input_mask)], axis=1)
+#                 elif args.pooling_strategy == PoolingStrategy.FIRST_TOKEN or \
+#                         args.pooling_strategy == PoolingStrategy.CLS_TOKEN:
+#                     pooled = tf.squeeze(encoder_layer[:, 0:1, :], axis=1)
+#                 elif args.pooling_strategy == PoolingStrategy.LAST_TOKEN or \
+#                         args.pooling_strategy == PoolingStrategy.SEP_TOKEN:
+#                     seq_len = tf.cast(tf.reduce_sum(input_mask, axis=1), tf.int32)
+#                     rng = tf.range(0, tf.shape(seq_len)[0])
+#                     indexes = tf.stack([rng, seq_len - 1], 1)
+#                     pooled = tf.gather_nd(encoder_layer, indexes)
+#                 elif args.pooling_strategy == PoolingStrategy.NONE:
+#                     pooled = mul_mask(encoder_layer, input_mask)
+#                 else:
+#                     raise NotImplementedError()
+#
+#             if args.fp16:
+#                 pooled = tf.cast(pooled, tf.float16)
+#
+#             pooled = tf.identity(pooled, 'final_encodes')
+#             output_tensors = [pooled]
+#             tmp_g = tf.get_default_graph().as_graph_def()
+#
+#         with tf.Session(config=config) as sess:
+#             logger.info('load parameters from checkpoint...')
+#
+#             sess.run(tf.global_variables_initializer())
+#             dtypes = [n.dtype for n in input_tensors]
+#             logger.info('optimize...')
+#             tmp_g = optimize_for_inference(
+#                 tmp_g,
+#                 [n.name[:-2] for n in input_tensors],
+#                 [n.name[:-2] for n in output_tensors],
+#                 [dtype.as_datatype_enum for dtype in dtypes],
+#                 False)
+#
+#             logger.info('freeze...')
+#             tmp_g = convert_variables_to_constants(sess, tmp_g, [n.name[:-2] for n in output_tensors],
+#                                                    use_fp16=args.fp16)
+#
+#         logger.info('write graph to a tmp file: %s' % args.model_pb_dir)
+#         with tf.gfile.GFile(pb_file, 'wb') as f:
+#             f.write(tmp_g.SerializeToString())
+#     except Exception:
+#         logger.error('fail to optimize the graph!', exc_info=True)
 
 
 def convert_variables_to_constants(sess,
@@ -250,9 +250,10 @@ def convert_variables_to_constants(sess,
     return output_graph_def
 
 
-def optimize_ner_model(args, num_labels,  logger=None):
+def optimize_ner_model(args, num_labels, num_props, logger=None):
     """
     加载中文NER模型
+    :param num_props:
     :param args:
     :param num_labels:
     :param logger:
@@ -280,13 +281,14 @@ def optimize_ner_model(args, num_labels,  logger=None):
         with graph.as_default():
             with tf.Session() as sess:
                 input_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_ids')
+                prop_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'prop_ids')
                 input_mask = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_mask')
 
                 bert_config = modeling.BertConfig.from_json_file(os.path.join(args.bert_model_dir, 'bert_config.json'))
                 from bert_base_skill_tag.train.models import create_model
                 (total_loss, logits, trans, pred_ids) = create_model(
-                    bert_config=bert_config, is_training=False, input_ids=input_ids, input_mask=input_mask, segment_ids=None,
-                    labels=None, num_labels=num_labels, use_one_hot_embeddings=False, dropout_rate=1.0)
+                    bert_config=bert_config, is_training=False, input_ids=input_ids, prop_ids=prop_ids, input_mask=input_mask, segment_ids=None,
+                    labels=None, num_labels=num_labels, num_props=num_props, use_one_hot_embeddings=False, dropout_rate=1.0)
                 pred_ids = tf.identity(pred_ids, 'pred_ids')
                 saver = tf.train.Saver()
 
@@ -303,63 +305,65 @@ def optimize_ner_model(args, num_labels,  logger=None):
             f.write(tmp_g.SerializeToString())
         return pb_file
     except Exception as e:
-        logger.error('fail to optimize the graph! %s' % e, exc_info=True)
+        # logger.error('fail to optimize the graph! %s' % e, exc_info=True)
+        print(e)
+        logger.error('fail to optimize the graph! %s' % e)
 
 
-def optimize_class_model(args, num_labels,  logger=None):
-    """
-    加载中文分类模型
-    :param args:
-    :param num_labels:
-    :param logger:
-    :return:
-    """
-    if not logger:
-        logger = set_logger(colored('CLASSIFICATION_MODEL, Lodding...', 'cyan'), args.verbose)
-    try:
-        # 如果PB文件已经存在则，返回PB文件的路径，否则将模型转化为PB文件，并且返回存储PB文件的路径
-        if args.model_pb_dir is None:
-            # 获取当前的运行路径
-            tmp_file = os.path.join(os.getcwd(), 'predict_optimizer')
-            if not os.path.exists(tmp_file):
-                os.mkdir(tmp_file)
-        else:
-            tmp_file = args.model_pb_dir
-        pb_file = os.path.join(tmp_file, 'classification_model.pb')
-        if os.path.exists(pb_file):
-            print('pb_file exits', pb_file)
-            return pb_file
-        import tensorflow as tf
-
-        graph = tf.Graph()
-        with graph.as_default():
-            with tf.Session() as sess:
-                input_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_ids')
-                input_mask = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_mask')
-
-                bert_config = modeling.BertConfig.from_json_file(os.path.join(args.bert_model_dir, 'bert_config.json'))
-                from bert_base_skill_tag.train.models import create_classification_model
-                loss, per_example_loss, logits, probabilities = create_classification_model(bert_config=bert_config, is_training=False,
-                    input_ids=input_ids, input_mask=input_mask, segment_ids=None, labels=None, num_labels=num_labels)
-                # pred_ids = tf.argmax(probabilities, axis=-1, output_type=tf.int32, name='pred_ids')
-                # pred_ids = tf.identity(pred_ids, 'pred_ids')
-                probabilities = tf.identity(probabilities, 'pred_prob')
-                saver = tf.train.Saver()
-
-            with tf.Session() as sess:
-                sess.run(tf.global_variables_initializer())
-                saver.restore(sess, tf.train.latest_checkpoint(args.model_dir))
-                logger.info('freeze...')
-                from tensorflow.python.framework import graph_util
-                tmp_g = graph_util.convert_variables_to_constants(sess, graph.as_graph_def(), ['pred_prob'])
-                logger.info('predict cut finished !!!')
-        # 存储二进制模型到文件中
-        logger.info('write graph to a tmp file: %s' % pb_file)
-        with tf.gfile.GFile(pb_file, 'wb') as f:
-            f.write(tmp_g.SerializeToString())
-        return pb_file
-    except Exception as e:
-        logger.error('fail to optimize the graph! %s' % e, exc_info=True)
+# def optimize_class_model(args, num_labels,  logger=None):
+#     """
+#     加载中文分类模型
+#     :param args:
+#     :param num_labels:
+#     :param logger:
+#     :return:
+#     """
+#     if not logger:
+#         logger = set_logger(colored('CLASSIFICATION_MODEL, Lodding...', 'cyan'), args.verbose)
+#     try:
+#         # 如果PB文件已经存在则，返回PB文件的路径，否则将模型转化为PB文件，并且返回存储PB文件的路径
+#         if args.model_pb_dir is None:
+#             # 获取当前的运行路径
+#             tmp_file = os.path.join(os.getcwd(), 'predict_optimizer')
+#             if not os.path.exists(tmp_file):
+#                 os.mkdir(tmp_file)
+#         else:
+#             tmp_file = args.model_pb_dir
+#         pb_file = os.path.join(tmp_file, 'classification_model.pb')
+#         if os.path.exists(pb_file):
+#             print('pb_file exits', pb_file)
+#             return pb_file
+#         import tensorflow as tf
+#
+#         graph = tf.Graph()
+#         with graph.as_default():
+#             with tf.Session() as sess:
+#                 input_ids = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_ids')
+#                 input_mask = tf.placeholder(tf.int32, (None, args.max_seq_len), 'input_mask')
+#
+#                 bert_config = modeling.BertConfig.from_json_file(os.path.join(args.bert_model_dir, 'bert_config.json'))
+#                 from bert_base_skill_tag.train.models import create_classification_model
+#                 loss, per_example_loss, logits, probabilities = create_classification_model(bert_config=bert_config, is_training=False,
+#                     input_ids=input_ids, input_mask=input_mask, segment_ids=None, labels=None, num_labels=num_labels)
+#                 # pred_ids = tf.argmax(probabilities, axis=-1, output_type=tf.int32, name='pred_ids')
+#                 # pred_ids = tf.identity(pred_ids, 'pred_ids')
+#                 probabilities = tf.identity(probabilities, 'pred_prob')
+#                 saver = tf.train.Saver()
+#
+#             with tf.Session() as sess:
+#                 sess.run(tf.global_variables_initializer())
+#                 saver.restore(sess, tf.train.latest_checkpoint(args.model_dir))
+#                 logger.info('freeze...')
+#                 from tensorflow.python.framework import graph_util
+#                 tmp_g = graph_util.convert_variables_to_constants(sess, graph.as_graph_def(), ['pred_prob'])
+#                 logger.info('predict cut finished !!!')
+#         # 存储二进制模型到文件中
+#         logger.info('write graph to a tmp file: %s' % pb_file)
+#         with tf.gfile.GFile(pb_file, 'wb') as f:
+#             f.write(tmp_g.SerializeToString())
+#         return pb_file
+#     except Exception as e:
+#         logger.error('fail to optimize the graph! %s' % e, exc_info=True)
 
 
 

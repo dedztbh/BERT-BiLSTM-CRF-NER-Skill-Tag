@@ -75,45 +75,50 @@ class BertServer(threading.Thread):
         }
         self.processes = []
         # 如果BERT model path 不是空的，那么就启动bert模型
-        if args.mode == 'BERT':
-            self.logger.info('freeze, optimize and export graph, could take a while...')
-            with Pool(processes=1) as pool:
-                # optimize the graph, must be done in another process
-                from .graph import optimize_bert_graph
-                self.graph_path = pool.apply(optimize_bert_graph, (self.args,))
-            # from .graph import optimize_graph
-            # self.graph_path = optimize_graph(self.args, self.logger)
-            if self.graph_path:
-                self.logger.info('optimized graph is stored at: %s' % self.graph_path)
-            else:
-                raise FileNotFoundError('graph optimization fails and returns empty result')
-        elif args.mode == 'NER':
+        # if args.mode == 'BERT':
+        #     self.logger.info('freeze, optimize and export graph, could take a while...')
+        #     with Pool(processes=1) as pool:
+        #         # optimize the graph, must be done in another process
+        #         from .graph import optimize_bert_graph
+        #         self.graph_path = pool.apply(optimize_bert_graph, (self.args,))
+        #     # from .graph import optimize_graph
+        #     # self.graph_path = optimize_graph(self.args, self.logger)
+        #     if self.graph_path:
+        #         self.logger.info('optimized graph is stored at: %s' % self.graph_path)
+        #     else:
+        #         raise FileNotFoundError('graph optimization fails and returns empty result')
+        if args.mode == 'NER':
             self.logger.info('lodding ner model, could take a while...')
+
+            with open(os.path.join(self.args.model_dir, 'prop2id.pkl'), mode='rb') as f:
+                self.prop2id = pickle.load(f)
+
             with Pool(processes=1) as pool:
                 # optimize the graph, must be done in another process
                 from .graph import optimize_ner_model
                 num_labels, label2id, id2label = init_predict_var(self.args.model_dir)
                 self.num_labels = num_labels + 1
+                self.num_props = len(self.prop2id) + 1
                 self.id2label = id2label
-                self.graph_path = pool.apply(optimize_ner_model, (self.args, self.num_labels))
+                self.graph_path = pool.apply(optimize_ner_model, (self.args, self.num_labels, self.num_props))
             if self.graph_path:
                 self.logger.info('optimized graph is stored at: %s' % self.graph_path)
             else:
                 raise FileNotFoundError('graph optimization fails and returns empty result')
-        elif args.mode == 'CLASS':
-            self.logger.info('lodding classification predict, could take a while...')
-            with Pool(processes=1) as pool:
-                # optimize the graph, must be done in another process
-                from .graph import optimize_class_model
-                num_labels, label2id, id2label = init_predict_var(self.args.model_dir)
-                self.num_labels = num_labels
-                self.id2label = id2label
-                self.logger.info('contain %d labels:%s' %(num_labels, str(id2label.values())))
-                self.graph_path = pool.apply(optimize_class_model, (self.args, num_labels))
-            if self.graph_path:
-                self.logger.info('optimized graph is stored at: %s' % self.graph_path)
-            else:
-                raise FileNotFoundError('graph optimization fails and returns empty result')
+        # elif args.mode == 'CLASS':
+        #     self.logger.info('lodding classification predict, could take a while...')
+        #     with Pool(processes=1) as pool:
+        #         # optimize the graph, must be done in another process
+        #         from .graph import optimize_class_model
+        #         num_labels, label2id, id2label = init_predict_var(self.args.model_dir)
+        #         self.num_labels = num_labels
+        #         self.id2label = id2label
+        #         self.logger.info('contain %d labels:%s' %(num_labels, str(id2label.values())))
+        #         self.graph_path = pool.apply(optimize_class_model, (self.args, num_labels))
+        #     if self.graph_path:
+        #         self.logger.info('optimized graph is stored at: %s' % self.graph_path)
+        #     else:
+        #         raise FileNotFoundError('graph optimization fails and returns empty result')
         else:
             raise ValueError('args model not special')
 
@@ -164,12 +169,12 @@ class BertServer(threading.Thread):
         # 这里启动多个进程，加载主模型
         device_map = self._get_device_map()
         for idx, device_id in enumerate(device_map):
-            if self.args.mode == 'BERT':
-                process = BertWorker(idx, self.args, addr_backend_list, addr_sink, device_id,
-                                     self.graph_path, self.args.mode)
-                self.processes.append(process)
-                process.start()
-            elif self.args.mode in ['NER', 'CLASS']:
+            # if self.args.mode == 'BERT':
+            #     process = BertWorker(idx, self.args, addr_backend_list, addr_sink, device_id,
+            #                          self.graph_path, self.args.mode)
+            #     self.processes.append(process)
+            #     process.start()
+            if self.args.mode in ['NER', 'CLASS']:
                 process = BertWorker(idx, self.args, addr_backend_list, addr_sink, device_id,
                                      self.graph_path, self.args.mode, self.id2label)
                 self.processes.append(process)
@@ -326,14 +331,14 @@ class BertSink(Process):
                 partial_id = job_info[1] if len(job_info) == 2 else 0
 
                 # parsing the ndarray
-                if self.args.mode == 'BERT':
-                    arr_info, arr_val = jsonapi.loads(msg[1]), msg[2]
-                    # np.frombuffer() 以流的形式将数据转化为ndarray
-                    X = np.frombuffer(memoryview(arr_val), dtype=arr_info['dtype'])
-                    X = X.reshape(arr_info['shape'])
-                    pending_result[job_id].append((X, partial_id))
-                    pending_checksum[job_id] += X.shape[0]
-                elif self.args.mode == 'NER':
+                # if self.args.mode == 'BERT':
+                #     arr_info, arr_val = jsonapi.loads(msg[1]), msg[2]
+                #     # np.frombuffer() 以流的形式将数据转化为ndarray
+                #     X = np.frombuffer(memoryview(arr_val), dtype=arr_info['dtype'])
+                #     X = X.reshape(arr_info['shape'])
+                #     pending_result[job_id].append((X, partial_id))
+                #     pending_checksum[job_id] += X.shape[0]
+                if self.args.mode == 'NER':
                     arr_info, arr_val = jsonapi.loads(msg[1]), pickle.loads(msg[2])
                     pending_result[job_id].append((arr_val, partial_id))
                     pending_checksum[job_id] += len(arr_val)
@@ -407,21 +412,21 @@ class BertWorker(Process):
         from tensorflow.python.estimator.run_config import RunConfig
         from tensorflow.python.estimator.model_fn import EstimatorSpec
 
-        def model_fn(features, labels, mode, params):
-            with tf.gfile.GFile(self.graph_path, 'rb') as f:
-                graph_def = tf.GraphDef()
-                graph_def.ParseFromString(f.read())
-
-            input_names = ['input_ids', 'input_mask', 'input_type_ids']
-
-            output = tf.import_graph_def(graph_def,
-                                         input_map={k + ':0': features[k] for k in input_names},
-                                         return_elements=['final_encodes:0'])
-
-            return EstimatorSpec(mode=mode, predictions={
-                'client_id': features['client_id'],
-                'encodes': output[0]
-            })
+        # def model_fn(features, labels, mode, params):
+        #     with tf.gfile.GFile(self.graph_path, 'rb') as f:
+        #         graph_def = tf.GraphDef()
+        #         graph_def.ParseFromString(f.read())
+        #
+        #     input_names = ['input_ids', 'prop_ids', 'input_mask', 'input_type_ids']
+        #
+        #     output = tf.import_graph_def(graph_def,
+        #                                  input_map={k + ':0': features[k] for k in input_names},
+        #                                  return_elements=['final_encodes:0'])
+        #
+        #     return EstimatorSpec(mode=mode, predictions={
+        #         'client_id': features['client_id'],
+        #         'encodes': output[0]
+        #     })
 
         def ner_model_fn(features, labels, mode, params):
             """
@@ -436,8 +441,9 @@ class BertWorker(Process):
                 graph_def = tf.GraphDef()
                 graph_def.ParseFromString(f.read())
             input_ids = features["input_ids"]
+            prop_ids = features["prop_ids"]
             input_mask = features["input_mask"]
-            input_map = {"input_ids": input_ids, "input_mask": input_mask}
+            input_map = {"input_ids": input_ids, "prop_ids": prop_ids, "input_mask": input_mask}
             pred_ids = tf.import_graph_def(graph_def, name='', input_map=input_map, return_elements=['pred_ids:0'])
 
             return EstimatorSpec(mode=mode, predictions={
@@ -445,28 +451,28 @@ class BertWorker(Process):
                 'encodes': pred_ids[0]
             })
 
-        def classification_model_fn(features, labels, mode, params):
-            """
-            文本分类模型的model_fn
-            :param features:
-            :param labels:
-            :param mode:
-            :param params:
-            :return:
-            """
-            with tf.gfile.GFile(self.graph_path, 'rb') as f:
-                graph_def = tf.GraphDef()
-                graph_def.ParseFromString(f.read())
-            input_ids = features["input_ids"]
-            input_mask = features["input_mask"]
-            input_map = {"input_ids": input_ids, "input_mask": input_mask}
-            pred_probs = tf.import_graph_def(graph_def, name='', input_map=input_map, return_elements=['pred_prob:0'])
-
-            return EstimatorSpec(mode=mode, predictions={
-                'client_id': features['client_id'],
-                'encodes': tf.argmax(pred_probs[0], axis=-1),
-                'score': tf.reduce_max(pred_probs[0], axis=-1)
-            })
+        # def classification_model_fn(features, labels, mode, params):
+        #     """
+        #     文本分类模型的model_fn
+        #     :param features:
+        #     :param labels:
+        #     :param mode:
+        #     :param params:
+        #     :return:
+        #     """
+        #     with tf.gfile.GFile(self.graph_path, 'rb') as f:
+        #         graph_def = tf.GraphDef()
+        #         graph_def.ParseFromString(f.read())
+        #     input_ids = features["input_ids"]
+        #     input_mask = features["input_mask"]
+        #     input_map = {"input_ids": input_ids, "input_mask": input_mask}
+        #     pred_probs = tf.import_graph_def(graph_def, name='', input_map=input_map, return_elements=['pred_prob:0'])
+        #
+        #     return EstimatorSpec(mode=mode, predictions={
+        #         'client_id': features['client_id'],
+        #         'encodes': tf.argmax(pred_probs[0], axis=-1),
+        #         'score': tf.reduce_max(pred_probs[0], axis=-1)
+        #     })
 
         # 0 表示只使用CPU 1 表示使用GPU
         config = tf.ConfigProto(device_count={'GPU': 0 if self.device_id < 0 else 1})
@@ -478,10 +484,10 @@ class BertWorker(Process):
         #     config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
         if self.mode == 'NER':
             return Estimator(model_fn=ner_model_fn, config=RunConfig(session_config=config))
-        elif self.mode == 'BERT':
-            return Estimator(model_fn=model_fn, config=RunConfig(session_config=config))
-        elif self.mode == 'CLASS':
-            return Estimator(model_fn=classification_model_fn, config=RunConfig(session_config=config))
+        # elif self.mode == 'BERT':
+        #     return Estimator(model_fn=model_fn, config=RunConfig(session_config=config))
+        # elif self.mode == 'CLASS':
+        #     return Estimator(model_fn=classification_model_fn, config=RunConfig(session_config=config))
 
     def run(self):
         self._run()
@@ -503,20 +509,20 @@ class BertWorker(Process):
 
         sink.connect(self.sink_address)
         for r in estimator.predict(input_fn=self.input_fn_builder(receivers, tf), yield_single_examples=False):
-            if self.mode == 'BERT':
-                send_ndarray(sink, r['client_id'], r['encodes'])
-                logger.info('job done\tsize: %s\tclient: %s' % (r['encodes'].shape, r['client_id']))
-            elif self.mode == 'NER':
+            # if self.mode == 'BERT':
+            #     send_ndarray(sink, r['client_id'], r['encodes'])
+            #     logger.info('job done\tsize: %s\tclient: %s' % (r['encodes'].shape, r['client_id']))
+            if self.mode == 'NER':
                 pred_label_result, pred_ids_result = ner_result_to_json(r['encodes'], self.id2label)
                 rst = send_ndarray(sink, r['client_id'], pred_label_result)
                 # print('rst:', rst)
                 logger.info('job done\tsize: %s\tclient: %s' % (r['encodes'].shape, r['client_id']))
-            elif self.mode == 'CLASS':
-                pred_label_result = [self.id2label.get(x, -1) for x in r['encodes']]
-                pred_score_result = r['score'].tolist()
-                to_client = {'pred_label': pred_label_result, 'score': pred_score_result}
-                rst = send_ndarray(sink, r['client_id'], to_client)
-                logger.info('job done\tsize: %s\tclient: %s' % (r['encodes'].shape, r['client_id']))
+            # elif self.mode == 'CLASS':
+            #     pred_label_result = [self.id2label.get(x, -1) for x in r['encodes']]
+            #     pred_score_result = r['score'].tolist()
+            #     to_client = {'pred_label': pred_label_result, 'score': pred_score_result}
+            #     rst = send_ndarray(sink, r['client_id'], to_client)
+            #     logger.info('job done\tsize: %s\tclient: %s' % (r['encodes'].shape, r['client_id']))
 
     def input_fn_builder(self, socks, tf):
         import sys
@@ -528,6 +534,10 @@ class BertWorker(Process):
             tokenizer = FullTokenizer(vocab_file=os.path.join(self.args.bert_model_dir, 'vocab.txt'))
             # Windows does not support logger in MP environment, thus get a new logger
             # inside the process for better compatibility
+
+            with open(os.path.join(self.args.model_dir, 'prop2id.pkl'), mode='rb') as f:
+                prop2id = pickle.load(f)
+
             logger = set_logger(colored('WORKER-%d' % self.worker_id, 'yellow'), self.verbose)
 
             poller = zmq.Poller()
@@ -547,12 +557,13 @@ class BertWorker(Process):
                         # 对接收到的字符进行切词，并且转化为id格式
                         # logger.info('get msg:%s, type:%s' % (msg[0], type(msg[0])))
                         is_tokenized = all(isinstance(el, list) for el in msg)
-                        tmp_f = list(convert_lst_to_features(msg, self.max_seq_len, tokenizer, logger,
+                        tmp_f = list(convert_lst_to_features(msg, self.max_seq_len, tokenizer, prop2id, logger,
                                                              is_tokenized, self.mask_cls_sep))
                         #print([f.input_ids for f in tmp_f])
                         yield {
                             'client_id': client_id,
                             'input_ids': [f.input_ids for f in tmp_f],
+                            'prop_ids': [f.prop_ids for f in tmp_f],
                             'input_mask': [f.input_mask for f in tmp_f],
                             'input_type_ids': [f.input_type_ids for f in tmp_f]
                         }
@@ -562,11 +573,13 @@ class BertWorker(Process):
                 gen,
                 output_types={'input_ids': tf.int32,
                               'input_mask': tf.int32,
+                              'prop_ids': tf.int32,
                               'input_type_ids': tf.int32,
                               'client_id': tf.string},
                 output_shapes={
                     'client_id': (),
                     'input_ids': (None, self.max_seq_len),
+                    'prop_ids': (None, self.max_seq_len),
                     'input_mask': (None, self.max_seq_len), #.shard(num_shards=4, index=4)
                     'input_type_ids': (None, self.max_seq_len)}).prefetch(self.prefetch_size))
 

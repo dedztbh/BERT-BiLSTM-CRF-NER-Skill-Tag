@@ -13,15 +13,20 @@ from __future__ import division
 from __future__ import print_function
 
 
-# def start_server():
-#     from bert_base_skill_tag.server import BertServer
-#     from bert_base_skill_tag.server.helper import get_run_args
-#
-#     args = get_run_args()
-#     print(args)
-#     server = BertServer(args)
-#     server.start()
-#     server.join()
+def start_server():
+    from bert_base_skill_tag.server import BertServer
+    from bert_base_skill_tag.server.helper import get_run_args
+
+    args = get_run_args()
+
+    # args.model_dir = 'tmp/out_dir/'
+    # args.bert_model_dir = 'tmp/init_checkpoint/'
+    # args.mode = 'NER'
+
+    print(args)
+    server = BertServer(args)
+    server.start()
+    server.join()
 
 prefix = 'tmp/'
 
@@ -61,5 +66,5 @@ if __name__ == '__main__':
     """
     如果想训练，那么直接 指定参数跑，如果想启动服务，那么注释掉train,打开server即可
     """
-    train_ner()
-    # start_server()
+    # train_ner()
+    start_server()
