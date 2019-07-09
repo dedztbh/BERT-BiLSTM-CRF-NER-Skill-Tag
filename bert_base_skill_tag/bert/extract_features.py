@@ -27,8 +27,6 @@ from bert_base_skill_tag.bert import modeling
 from bert_base_skill_tag.bert import tokenization
 import tensorflow as tf
 
-from extract_util import preprocess_input_w_prop_embeddings
-
 flags = tf.flags
 
 FLAGS = flags.FLAGS
@@ -429,15 +427,11 @@ def main(_):
 def convert_lst_to_features(lst_str, prop, seq_length, tokenizer, prop2id, logger, is_tokenized=False, mask_cls_sep=False):
     """Loads a data file into a list of `InputBatch`s."""
 
-    if is_tokenized:
-        lst_str = [''.join(strs) for strs in lst_str]
-
     lst_str = list(zip(lst_str, prop))
     print(lst_str)
     examples = read_tokenized_examples(lst_str) if is_tokenized else read_line_examples(lst_str)
 
-    # _tokenize = lambda x: x if is_tokenized else tokenizer.tokenize(x)
-    _tokenize = lambda x: x if is_tokenized else list(x)
+    _tokenize = lambda x: x if is_tokenized else tokenizer.tokenize(x)
 
     for (ex_index, example) in enumerate(examples):
         tokens_a = _tokenize(example.text_a)

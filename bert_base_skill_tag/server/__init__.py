@@ -568,7 +568,8 @@ class BertWorker(Process):
                         # check if msg is a list of list, if yes consider the input is already tokenized
                         # 对接收到的字符进行切词，并且转化为id格式
                         # logger.info('get msg:%s, type:%s' % (msg[0], type(msg[0])))
-                        is_tokenized = all(isinstance(el, list) for el in msg)
+                        # is_tokenized = all(isinstance(el, list) for el in msg)
+                        is_tokenized = True
                         tmp_f = list(convert_lst_to_features(msg, props, self.max_seq_len, tokenizer, prop2id, logger,
                                                              is_tokenized, self.mask_cls_sep))
                         #print([f.input_ids for f in tmp_f])
