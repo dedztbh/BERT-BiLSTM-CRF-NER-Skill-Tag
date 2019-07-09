@@ -20,6 +20,7 @@ import sys
 import threading
 import time
 import pickle
+import json
 from collections import defaultdict
 from datetime import datetime
 from multiprocessing import Process
@@ -552,12 +553,23 @@ class BertWorker(Process):
                         #接收来自客户端的消息
                         client_id, raw_msg = sock.recv_multipart()
                         msg = jsonapi.loads(raw_msg)
+
+                        inputs = []
+                        props = []
+                        for m in msg:
+                            jsonobj = json.loads(m)
+                            print(jsonobj)
+                            inputs.append(jsonobj['input'])
+                            props.append(jsonobj['prop'])
+
+                        msg = inputs
+
                         logger.info('new job\tsocket: %d\tsize: %d\tclient: %s' % (sock_idx, len(msg), client_id))
                         # check if msg is a list of list, if yes consider the input is already tokenized
                         # 对接收到的字符进行切词，并且转化为id格式
                         # logger.info('get msg:%s, type:%s' % (msg[0], type(msg[0])))
                         is_tokenized = all(isinstance(el, list) for el in msg)
-                        tmp_f = list(convert_lst_to_features(msg, self.max_seq_len, tokenizer, prop2id, logger,
+                        tmp_f = list(convert_lst_to_features(msg, props, self.max_seq_len, tokenizer, prop2id, logger,
                                                              is_tokenized, self.mask_cls_sep))
                         #print([f.input_ids for f in tmp_f])
                         yield {

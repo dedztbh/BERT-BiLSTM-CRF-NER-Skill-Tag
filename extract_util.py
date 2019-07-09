@@ -1,7 +1,7 @@
 import re
 import jieba.posseg as pseg
 
-from .data import ndarray_to_tuple_array
+from data import ndarray_to_tuple_array, tuple_array_to_ndarray
 
 with open('data/stopwords.txt', 'r', encoding='utf-8') as file:
     stop_words = file.read().split('\n')
@@ -46,7 +46,7 @@ def preprocess_input_with_properties(strs, split=False):
     return strs
 
 
-def preprocess_input_w_prop_embeddings(strs, return_tuple_array=False):
+def preprocess_input_w_prop_embeddings(strs, return_tuple_array=False, split=False):
     def filter_words(x):
         seg_result = list(filter(filter_seg_result, pseg.cut(x)))
         x = ''.join([w for w, p in seg_result])
@@ -74,13 +74,28 @@ def preprocess_input_w_prop_embeddings(strs, return_tuple_array=False):
 
         assert len(x) == len(prop_labels)
 
-        result = [list(x), prop_labels]
+        result = [x, prop_labels]
 
-        return ndarray_to_tuple_array(result, 2) if return_tuple_array else result
+        return result
 
     def clean_desc(s):
         s = desc_clean_clean(s)
-        return filter_words(s)
+        s = filter_words(s)
+        if split:
+            s0s = re.split(r'[。；！.;!]', s[0])
+            s1s = []
+            i = 0
+            for s0 in s0s:
+                seg_len = len(s0)
+                s1s.append(s[1][i:i + seg_len])
+                i += seg_len + 1
+            for s0, s1 in zip(s0s, s1s):
+                assert len(s0) == len(s1)
+
+            s = tuple_array_to_ndarray(list(filter(lambda x: x[0] != '', zip(s0s, s1s))))
+        if return_tuple_array:
+            s = ndarray_to_tuple_array(s)
+        return s
 
     strs = [clean_desc(s) for s in strs]
 

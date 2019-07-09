@@ -21,7 +21,9 @@ def start_server():
 
     # args.model_dir = 'tmp/out_dir/'
     # args.bert_model_dir = 'tmp/init_checkpoint/'
-    # args.mode = 'NER'
+    args.mode = 'NER'
+    args.max_seq_length = 202
+    args.max_batch_size = 32
 
     print(args)
     server = BertServer(args)
@@ -48,7 +50,7 @@ def train_ner():
     args.verbose = True
     args.gpu_memory_fraction = 1.0
     args.do_predict = False
-    args.lstm_size = 1536
+    args.lstm_size = 128
     # args.save_checkpoints_steps = 5000
     # args.save_summary_steps = 5000
     args.clean = True
